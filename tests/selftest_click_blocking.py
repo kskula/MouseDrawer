@@ -98,7 +98,10 @@ wndproc_ref = WNDPROC(probe_wndproc)
 
 
 def create_probe(x, y):
-    """Male okno NIE-topmost - overlay (topmost) jest nad nim, wiec klik musi przez niego przejsc."""
+    """
+    Sonda (topmost), a okna overlay wypychamy NAD nia - inaczej klik trafialby
+    w sone bez przechodzenia przez overlay i test nie mialby sensu.
+    """
     hinst = kernel32.GetModuleHandleW(None)
     wc = WNDCLASSW()
     wc.lpfnWndProc = ctypes.cast(wndproc_ref, ctypes.c_void_p)
@@ -106,10 +109,29 @@ def create_probe(x, y):
     wc.hbrBackground = 6 + 1          # COLOR_WINDOW+1
     wc.lpszClassName = "ClickProbeWindow"
     user32.RegisterClassW(byref(wc))
-    return user32.CreateWindowExW(
-        0x00000080,                    # WS_EX_TOOLWINDOW (bez przycisku na pasku)
+    hwnd = user32.CreateWindowExW(
+        0x00000080 | 0x00000008,       # WS_EX_TOOLWINDOW | WS_EX_TOPMOST
         "ClickProbeWindow", "ClickProbe", 0x80000000 | 0x10000000,  # WS_POPUP|WS_VISIBLE
         x, y, PROBE_W, PROBE_H, None, None, hinst, None)
+
+    user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                    wintypes.UINT]
+    overlays = []
+
+    def cb(h, _):
+        if class_of(h) == "ScreenDrawerWindow":
+            overlays.append(h)
+        return True
+
+    user32.EnumWindows(ctypes_mod.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                              wintypes.LPARAM)(cb), 0)
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+    for h in overlays:
+        user32.SetWindowPos(h, wintypes.HWND(-1), 0, 0, 0, 0,
+                            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+    print(f"[CLICK] okien overlay wypchnietych nad sonda: {len(overlays)}")
+    return hwnd
 
 
 def overlay_running():

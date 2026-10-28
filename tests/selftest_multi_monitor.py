@@ -33,7 +33,7 @@ POSITIONS = [(200, 200), (400, 300), (700, 500),
              (4300, 900), (4400, 1000), (4500, 1100),
              (4600, 1200), (4700, 1300)]
 
-TICKS_HOLD = 14
+TICKS_HOLD = 40          # CTRL trzymany ~0.65 s - trzeba zdazyc sprawdzic przechwytywanie myszy
 TICK_LMB_START = 3
 
 

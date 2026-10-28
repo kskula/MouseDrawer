@@ -100,4 +100,4 @@ python tests/selftest_real_drawing.py dist\screen_drawer_window.exe
 
 ---
 
-*Author:* Adam Gałęzi
+*Author:* Adam Gałęza

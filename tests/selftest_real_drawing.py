@@ -70,8 +70,18 @@ def main():
     else:
         cmd = [target]
 
-    log = open(LOG_PATH, "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+    # aplikacja dziala bez konsoli (tylko ikona w zasobniku) i sama zapisuje log
+    # do pliku wskazanego zmienna SCREEN_DRAWER_LOG; stdout/stderr dziecka ida
+    # do osobnego pliku, zeby sie nie mieszaly w jednym
+    if os.path.exists(LOG_PATH):
+        try:
+            os.remove(LOG_PATH)
+        except Exception:
+            pass
+    log = open(LOG_PATH + ".raw", "w", encoding="utf-8", errors="replace")
+    env = dict(os.environ)
+    env["SCREEN_DRAWER_LOG"] = LOG_PATH
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
     print(f"[REAL] uruchomiono: {os.path.basename(target)} (pid={proc.pid})")
     try:
         time.sleep(6)

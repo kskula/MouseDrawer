@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
 """
-Screen Drawer Window - rysowanie po ekranie (CTRL+LMB), wersja multi-monitor.
+Screen Drawer - rysowanie po ekranie (CTRL+ALT+LMB), wersja multi-monitor + tray.
 
 Jedno okno overlay na KAZDY monitor (EnumDisplayMonitors), DPI per-monitor v2.
 Okna overlay sa WS_EX_TOOLWINDOW -> nie ma ich na pasku zadan ani w Alt-Tab.
-Jedynym widocznym oknem jest konsola z logami (jej X zamyka aplikacje).
 
-Rysowanie: przytrzymaj CTRL i LMB -> rysujesz; pusc CTRL -> rysunek znika.
-Zamkniecie: ESC albo X na oknie konsoli.
+BEZ OKNA KONSOLI: jedynym widocznym znakiem aplikacji jest IKONA W ZASOBNIKU
+(kolo zegara). Prawy przycisk na ikonie -> menu z pozycja "Zamknij".
+Logi leca do pliku %TEMP%\\screen_drawer.log (albo pod SCREEN_DRAWER_LOG).
 
-Blokowanie klikniec: overlay jest layered z color key, a piksele klucza ZAWSZE
-przepuszczaja klikniecia (zmierzone WindowFromPoint) - sama flaga WS_EX_TRANSPARENT
-nie wystarcza. Dlatego podczas trzymania CTRL zdarzenia myszy zjada
-niskopoziomowy hook WH_MOUSE_LL, uruchomiony na OSOBNYM watku z ciasna petla
-komunikatow (dzieki temu nie dodaje opoznien do kursora). Stan przycisku
-czytamy z samego hooka - zjedzone WM_LBUTTONDOWN nie trafia do kolejki, wiec
-GetAsyncKeyState(VK_LBUTTON) go nie widzi.
+Rysowanie: przytrzymaj CTRL + ALT + LMB -> rysujesz; pusc CTRL lub ALT -> rysunek znika.
+Zamkniecie: menu ikony -> "Zamknij" (albo ESC).
 """
 
 import ctypes as ctypes_mod
 from ctypes import wintypes, windll, Structure, c_long, c_int, c_uint, byref
+import os
 import threading
 import time
 import sys
 
 
 class _NullStream:
-    """Atrapa strumienia - build bez konsoli (--noconsole) ma sys.stdout/stderr = None."""
+    """Atrapa strumienia, gdy nie ma ani konsoli, ani pliku logu."""
 
     def write(self, *args):
         pass
@@ -35,6 +31,22 @@ class _NullStream:
         pass
 
 
+# Log do pliku: bez konsoli nie ma gdzie pisac, a log jest potrzebny do diagnozy.
+# SCREEN_DRAWER_LOG (jesli ustawione) = sciezka pliku logu, plik jest czyszczony.
+_LOG_PATH = os.environ.get("SCREEN_DRAWER_LOG") or os.path.join(
+    os.environ.get("TEMP", "."), "screen_drawer.log")
+_LOG_FILE = None
+
+if __name__ == "__main__":
+    # TYLKO przy uruchomieniu programu. Przy imporcie (np. w testach) nie wolno
+    # przekierowywac strumieni, bo znikneloby wyjscie procesu testujacego.
+    try:
+        _LOG_FILE = open(_LOG_PATH, "w" if os.environ.get("SCREEN_DRAWER_LOG") else "a",
+                         encoding="utf-8", errors="replace", buffering=1)
+        sys.stdout = _LOG_FILE
+        sys.stderr = _LOG_FILE
+    except Exception:
+        _LOG_FILE = None
 if getattr(sys, "stdout", None) is None:
     sys.stdout = _NullStream()
 if getattr(sys, "stderr", None) is None:
@@ -45,6 +57,7 @@ if getattr(sys, "stderr", None) is None:
 user32 = windll.user32
 gdi32 = windll.gdi32
 kernel32 = windll.kernel32
+shell32 = windll.shell32
 
 
 # ==================== Struktury ====================
@@ -85,6 +98,29 @@ class WNDCLASSW(Structure):
                 ("hbrBackground", wintypes.HBRUSH),
                 ("lpszMenuName", wintypes.LPCWSTR),
                 ("lpszClassName", wintypes.LPCWSTR)]
+
+
+class GUID(Structure):
+    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", wintypes.BYTE * 8)]
+
+
+class NOTIFYICONDATAW(Structure):
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT),
+                ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HICON),
+                ("szTip", wintypes.WCHAR * 128),
+                ("dwState", wintypes.DWORD),
+                ("dwStateMask", wintypes.DWORD),
+                ("szInfo", wintypes.WCHAR * 256),
+                ("uVersion", wintypes.UINT),
+                ("szInfoTitle", wintypes.WCHAR * 64),
+                ("dwInfoFlags", wintypes.DWORD),
+                ("guidItem", GUID),
+                ("hBalloonIcon", wintypes.HICON)]
 
 
 MONITORENUMPROC = ctypes_mod.WINFUNCTYPE(
@@ -166,11 +202,16 @@ user32.TranslateMessage.argtypes = [ctypes_mod.POINTER(MSG)]
 user32.TranslateMessage.restype = wintypes.BOOL
 user32.DispatchMessageW.argtypes = [ctypes_mod.POINTER(MSG)]
 user32.DispatchMessageW.restype = wintypes.LPARAM
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 
 user32.GetAsyncKeyState.argtypes = [c_int]
 user32.GetAsyncKeyState.restype = wintypes.SHORT
 user32.GetCursorPos.argtypes = [ctypes_mod.POINTER(POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
+
+user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+user32.MessageBoxW.restype = c_int
 
 # hook myszy
 user32.SetWindowsHookExW.argtypes = [c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
@@ -179,6 +220,23 @@ user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 user32.CallNextHookEx.argtypes = [wintypes.HHOOK, c_int, wintypes.WPARAM, wintypes.LPARAM]
 user32.CallNextHookEx.restype = wintypes.LPARAM
+
+# tray (ikona kolo zegara)
+shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes_mod.POINTER(NOTIFYICONDATAW)]
+shell32.Shell_NotifyIconW.restype = wintypes.BOOL
+user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes_mod.c_void_p]
+user32.LoadIconW.restype = wintypes.HICON
+user32.CreatePopupMenu.argtypes = []
+user32.CreatePopupMenu.restype = wintypes.HMENU
+user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes_mod.c_void_p, wintypes.LPCWSTR]
+user32.AppendMenuW.restype = wintypes.BOOL
+user32.TrackPopupMenu.argtypes = [wintypes.HMENU, wintypes.UINT, c_int, c_int,
+                                  c_int, wintypes.HWND, ctypes_mod.c_void_p]
+user32.TrackPopupMenu.restype = wintypes.BOOL
+user32.DestroyMenu.argtypes = [wintypes.HMENU]
+user32.DestroyMenu.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
 
 gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
 gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
@@ -233,25 +291,30 @@ LWA_COLORKEY = 0x00000001
 SRCCOPY = 0x00CC0020
 PS_SOLID = 0
 
+WM_NULL = 0x0000
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
 WM_QUIT = 0x0012
+WM_COMMAND = 0x0111
 WM_DISPLAYCHANGE = 0x007E
 WM_DPICHANGED = 0x02E0
 WM_TIMER = 0x0113
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONUP = 0x0205
+WM_CONTEXTMENU = 0x007B
 PM_REMOVE = 0x0001
 
 VK_LBUTTON = 0x01
 VK_CONTROL = 0x11
+VK_MENU = 0x12
 VK_ESCAPE = 0x1B
 
 WH_MOUSE_LL = 14
 WM_LBUTTONDOWN = 0x0201
-WM_LBUTTONUP = 0x0202
 BLOCKED_MOUSE_MESSAGES = frozenset([
     WM_LBUTTONDOWN, WM_LBUTTONUP,
     0x0204,  # WM_RBUTTONDOWN
-    0x0205,  # WM_RBUTTONUP
+    WM_RBUTTONUP,
     0x0207,  # WM_MBUTTONDOWN
     0x0208,  # WM_MBUTTONUP
     0x020A,  # WM_MOUSEWHEEL
@@ -259,6 +322,24 @@ BLOCKED_MOUSE_MESSAGES = frozenset([
     0x020C,  # WM_XBUTTONUP
     0x020E,  # WM_MOUSEHWHEEL
 ])
+
+# tray
+TRAY_CLASS_NAME = "ScreenDrawerTrayWindow"
+TRAY_CALLBACK_MSG = 0x8001          # WM_APP + 1
+TRAY_ICON_ID = 1
+ID_MENU_CLOSE = 1
+MF_STRING = 0x00000000
+TPM_RIGHTBUTTON = 0x0002
+TPM_BOTTOMALIGN = 0x0020
+NIM_ADD = 0x00000000
+NIM_DELETE = 0x00000002
+NIF_MESSAGE = 0x00000001
+NIF_ICON = 0x00000002
+NIF_TIP = 0x00000004
+IDI_APPLICATION = 32512
+MB_OK = 0x00000000
+MB_ICONINFORMATION = 0x00000040
+MB_SETFOREGROUND = 0x00010000
 
 ERROR_ALREADY_EXISTS = 183
 MUTEX_NAME = "ScreenDrawerWindow_SingleInstance"
@@ -283,12 +364,7 @@ TIMER_MS = 16
 
 
 # ==================== Hook myszy (wlasny watek) ====================
-# Bezpiecznik: jesli CTRL "wisi" wcisniety (zaciecie klawisza, remapper klawiszy,
-# zgubiony keyup), a uzytkownik nie klika - zdejmujemy blokade, zeby nie zabic myszy.
-BLOCK_IDLE_TIMEOUT_S = 10.0
-
-_hook = {"handle": None, "proc": None, "app": None, "blocked": 0, "ready": False,
-         "last_button": 0.0}
+_hook = {"handle": None, "proc": None, "app": None, "blocked": 0, "ready": False}
 
 
 def _mouse_hook_proc(ncode, wparam, lparam):
@@ -304,8 +380,6 @@ def _mouse_hook_proc(ncode, wparam, lparam):
                     app._phys_lmb = True
                 elif wparam == WM_LBUTTONUP:
                     app._phys_lmb = False
-                if wparam in BLOCKED_MOUSE_MESSAGES:
-                    _hook["last_button"] = time.monotonic()
                 if getattr(app, "_capturing", False) and wparam in BLOCKED_MOUSE_MESSAGES:
                     _hook["blocked"] += 1
                     return 1                     # nie przepuszczamy na pulpit
@@ -352,7 +426,6 @@ def set_input_capture(app, capture):
                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
                             | SWP_NOACTIVATE | SWP_FRAMECHANGED)
     if capture:
-        # przycisk mogl byc wcisniety zanim zaczeliśmy blokowac
         app._phys_lmb = bool(user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
     app._capturing = capture
     if not _hook["ready"]:
@@ -360,6 +433,100 @@ def set_input_capture(app, capture):
     print("[LOG] " + ("Blokuje klikniecia (rysowanie) - pulpit nie reaguje"
                       if capture else "Klik-through - pulpit znowu dziala"),
           file=sys.stderr)
+
+
+# ==================== Ikona w zasobniku (tray) ====================
+_tray = {"added": False, "hwnd": None, "nid": None, "icon": None}
+
+
+def tray_create_window(app):
+    """
+    Male, nieuzywane okno-uchwyt dla ikony w zasobniku. Jest zwyklym oknem
+    (bez LAYERED/NOACTIVATE), wiec mozna je aktywowac - dzieki temu menu
+    kontekstowe poprawnie sie zamyka. Trzymane POZA ekranem, bez paska zadan.
+    """
+    hinst = kernel32.GetModuleHandleW(None)
+    wc = WNDCLASSW()
+    wc.style = 0
+    wc.lpfnWndProc = ctypes_mod.cast(app._wndproc, ctypes_mod.c_void_p)
+    wc.cbClsExtra = 0
+    wc.cbWndExtra = 0
+    wc.hInstance = hinst
+    wc.hIcon = None
+    wc.hCursor = None
+    wc.hbrBackground = None
+    wc.lpszMenuName = None
+    wc.lpszClassName = TRAY_CLASS_NAME
+    if not user32.RegisterClassW(byref(wc)):
+        print(f"[ERROR] RegisterClassW (tray): {kernel32.GetLastError()}", file=sys.stderr)
+        return None
+    hwnd = user32.CreateWindowExW(
+        WS_EX_TOOLWINDOW, TRAY_CLASS_NAME, "ScreenDrawerTray", WS_POPUP,
+        -2000, -2000, 1, 1, None, None, hinst, None)
+    if not hwnd:
+        print(f"[ERROR] CreateWindowExW (tray): {kernel32.GetLastError()}", file=sys.stderr)
+    return hwnd
+
+
+def tray_add(app):
+    """Dodaje ikone aplikacji do zasobnika (kolo zegara)."""
+    if _tray["added"]:
+        return True
+    hwnd = tray_create_window(app)
+    if not hwnd:
+        return False
+    _tray["icon"] = user32.LoadIconW(None, ctypes_mod.c_void_p(IDI_APPLICATION))
+
+    nid = NOTIFYICONDATAW()
+    nid.cbSize = ctypes_mod.sizeof(NOTIFYICONDATAW)
+    nid.hWnd = hwnd
+    nid.uID = TRAY_ICON_ID
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+    nid.uCallbackMessage = TRAY_CALLBACK_MSG
+    nid.hIcon = _tray["icon"]
+    nid.szTip = "Screen Drawer - rysuj: CTRL+ALT+LMB | pusc CTRL/ALT = wyczysc | prawy klik = menu"
+
+    ok = bool(shell32.Shell_NotifyIconW(NIM_ADD, byref(nid)))
+    _tray["added"] = ok
+    _tray["hwnd"] = hwnd
+    _tray["nid"] = nid
+    if ok:
+        print("[OK] Ikona w zasobniku dodana (prawy przycisk = menu z 'Zamknij')",
+              file=sys.stderr)
+    else:
+        print(f"[WARN] Nie udalo sie dodac ikony w zasobniku: "
+              f"{kernel32.GetLastError()}", file=sys.stderr)
+    return ok
+
+
+def tray_remove():
+    """Usuwa ikone z zasobnika (przy zamykaniu aplikacji)."""
+    if not _tray["added"]:
+        return
+    nid = _tray["nid"]
+    nid.uFlags = 0
+    shell32.Shell_NotifyIconW(NIM_DELETE, byref(nid))
+    if _tray["hwnd"]:
+        user32.DestroyWindow(_tray["hwnd"])
+    _tray.update(added=False, hwnd=None, nid=None)
+    print("[LOG] Ikona w zasobniku usunieta", file=sys.stderr)
+
+
+def tray_show_menu(app):
+    """Menu pod prawym przyciskiem na ikonie (na razie: Zamknij)."""
+    hwnd = _tray["hwnd"]
+    if not hwnd:
+        return
+    pt = POINT()
+    user32.GetCursorPos(byref(pt))
+    menu = user32.CreatePopupMenu()
+    user32.AppendMenuW(menu, MF_STRING, ctypes_mod.c_void_p(ID_MENU_CLOSE), "Zamknij")
+    # sztuczka Microsoftu: bez SetForegroundWindow menu nie zamyka sie po kliknieciu obok
+    user32.SetForegroundWindow(hwnd)
+    user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+                          pt.x, pt.y, 0, hwnd, None)
+    user32.PostMessageW(hwnd, WM_NULL, 0, 0)
+    user32.DestroyMenu(menu)
 
 
 def set_dpi_awareness():
@@ -445,7 +612,7 @@ class DrawOverlayWindow:
         i na czas trzymania kombinacji blokuje klikniecia (pulpit nie reaguje).
         """
         ctrl = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
-        alt = bool(user32.GetAsyncKeyState(0x12) & 0x8000)      # VK_MENU
+        alt = bool(user32.GetAsyncKeyState(VK_MENU) & 0x8000)
         return ctrl and alt
 
     def _is_lmb_down(self):
@@ -466,6 +633,16 @@ class DrawOverlayWindow:
 
     # ---------- procedura okna ----------
     def _on_message(self, hwnd, message, wparam, lparam):
+        if message == TRAY_CALLBACK_MSG:
+            # zdarzenia na ikonie w zasobniku
+            if lparam in (WM_RBUTTONUP, WM_CONTEXTMENU):
+                tray_show_menu(self)
+            return 0
+        if message == WM_COMMAND:
+            if (wparam & 0xFFFF) == ID_MENU_CLOSE:
+                print("[INFO] Menu ikony: Zamknij -> koncze", file=sys.stderr)
+                self._quit = True
+            return 0
         if message == WM_CLOSE:
             print("[INFO] Zamkniecie okna -> koncze", file=sys.stderr)
             self._quit = True
@@ -537,6 +714,7 @@ class DrawOverlayWindow:
               f"ukryte z paska zadan)", file=sys.stderr)
         self._paint()
         set_input_capture(self, self._is_ctrl_down())
+        tray_add(self)
         return True
 
     def _destroy_windows(self):
@@ -645,7 +823,7 @@ class DrawOverlayWindow:
             self.segments.clear()
             self.drawing = False
             self._last_pt = None
-            print("[LOG] CTRL puszczony -> reset", file=sys.stderr)
+            print("[LOG] CTRL/ALT puszczony -> reset", file=sys.stderr)
 
         if ctrl and lmb:
             pt = self._cursor_pos()
@@ -704,6 +882,7 @@ class DrawOverlayWindow:
 
     def _cleanup(self):
         try:
+            tray_remove()
             self._destroy_windows()
         except Exception as e:
             print(f"[WARN] Blad sprzatania: {e}", file=sys.stderr)
@@ -720,8 +899,8 @@ BANNER = """
 ---------------------------------------------------------
   CTRL + ALT + LMB (przytrzymaj wszystkie)  ->  rysujesz
   pusc CTRL lub ALT                         ->  rysunek znika
+  prawy przycisk na ikonie kolo zegara      ->  menu (Zamknij)
   ESC                                       ->  zamknij aplikacje
-  (zamkniecie tego okna = koniec aplikacji)
 
   Samo CTRL nic nie robi - normalny Ctrl+klik dziala jak zawsze.
   Podczas trzymania CTRL+ALT klikniecia nie docieraja na pulpit.
@@ -733,15 +912,16 @@ def main():
     aware = set_dpi_awareness()
     print(BANNER, file=sys.stderr)
     print(f"[INFO] DPI awareness: {aware}", file=sys.stderr)
+    print(f"[INFO] Log: {_LOG_PATH}", file=sys.stderr)
     if not acquire_single_instance():
-        # Druga instancja nic nie robi, ale NIE zamykamy okna natychmiast -
-        # inaczej konsola tylko "mignie" i nie wiadomo o co chodzilo.
-        print("", file=sys.stderr)
-        print("[ERROR] Screen Drawer JUZ DZIALA (dozwolona jedna instancja).", file=sys.stderr)
-        print("        Nie uruchamiaj drugi raz - korzystaj z tego, co masz otwarte.", file=sys.stderr)
-        print("        Nie widzisz okna konsoli? Sprawdz pasek zadan.", file=sys.stderr)
-        print("        To okno zamknie sie samo za 8 sekund.", file=sys.stderr)
-        time.sleep(8)
+        print("[ERROR] Screen Drawer juz dziala (jedna instancja).", file=sys.stderr)
+        # Bez konsoli komunikat musi byc okienkiem - inaczej wyglada to jak awaria.
+        user32.MessageBoxW(
+            None,
+            "Screen Drawer juz dziala.\n\n"
+            "Poszukaj ikony kolo zegara (zasobnik systemowy).\n"
+            "Prawy przycisk na ikonie -> Zamknij.",
+            "Screen Drawer", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND)
         return 1
     return DrawOverlayWindow().run()
 

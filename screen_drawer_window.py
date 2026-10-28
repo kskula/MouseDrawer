@@ -204,7 +204,7 @@ class DrawOverlayWindow:
         
         wc = WNDCLASSW()
         wc.style = 0
-        wc.lpfnWndProc = user32.DefWindowProcW
+        wc.lpfnWndProc = ctypes_mod.cast(user32.DefWindowProcW, ctypes_mod.c_void_p)
         wc.cbClsExtra = 0
         wc.cbWndExtra = 0
         wc.hInstance = hinst
@@ -225,6 +225,13 @@ class DrawOverlayWindow:
         )
         
         if not self.hwnd:
+            err = ctypes_mod.get_last_error()
+            # Jeśli oknie nie mozna stworzyc (bez display), powracamy 0 ale to nie jest bled
+            import platform
+            if platform.system().lower() == 'linux' and self._size[0] == 0 and self._size[1] == 0:
+                print(f"[WARN] No display server - skipping window creation (expected in headless)", file=sys.stderr)
+                return False
+                
             err = ctypes_mod.get_last_error()
             print(f"[ERROR] CreateWindowExW failed: {err}", file=sys.stderr)
             return False

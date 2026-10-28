@@ -167,3 +167,6 @@ build/
 # Data files that shouldn't be tracked
 *.sqlite3
 *.db
+
+# Lokalne archiwa / snapshoty wersji
+_archive/

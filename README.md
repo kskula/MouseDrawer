@@ -1,113 +1,110 @@
-# Screen Drawer Window 🎨
+# Screen Drawer 🎨
 
-Aplikacja rysująca bezpośrednio na ekranie użytkownika. Przytrzymaj CTRL + kliknij LMB, aby rysować. Puść CTRL, aby resetować canvas.
+Rysowanie bezpośrednio po ekranie: przezroczysty overlay (jedno okno na każdy monitor),
+przez który widać i normalnie używa się pulpitu. Rysujesz tylko wtedy, gdy chcesz.
+
+## 🎮 Sterowanie
+
+| Akcja | Efekt |
+|---|---|
+| **CTRL + ALT + LMB** (przytrzymaj wszystkie trzy) | rysujesz czerwoną kreskę pod kursorem |
+| puść **CTRL** albo **ALT** | cały rysunek znika |
+| **ESC** | zamyka aplikację |
+| X na oknie konsoli | zamyka aplikację |
+
+**Samo CTRL nic nie robi** — nie rysuje i nie blokuje kliknięć, więc zwykły Ctrl+klik
+(np. wielokrotne zaznaczanie plików) działa normalnie, także gdy aplikacja chodzi.
+
+Dopóki trzymasz CTRL+ALT, kliknięcia **nie docierają** do pulpitu (nie zaznaczają się ikony,
+nie robi się ramka zaznaczenia) — czyli rysowanie nie zmienia stanu tego, co pod spodem.
 
 ## ✨ Cechy
-- Rysowanie natychmiastowe po ekranie (bez okna)
-- Minimalne, przezroczyste okno sterujące na górze ekranu
-- Reset canvas przy puszczeniu CTRL
-- Tryb usługi opcjonalny (dla automatyzacji)
+
+- **Jeden overlay na każdy monitor** (`EnumDisplayMonitors`) — działa też na drugim ekranie
+- **DPI per-monitor v2** — poprawne piksele także przy skalowaniu 150 %/200 %
+- **Blokada kliknięć** tylko na czas trzymania CTRL+ALT (`WH_MOUSE_LL` na własnym wątku,
+  więc kursor nie zwalnia)
+- **Auto-odtwarzanie okien** po zmianie konfiguracji ekranów (`WM_DISPLAYCHANGE`, `WM_DPICHANGED`)
+- Okna overlay są poza paskiem zadań i poza Alt-Tab (`WS_EX_TOOLWINDOW`)
+- **Jedna instancja** (nazwany mutex) — drugie uruchomienie tylko się zgłasza i wychodzi
+- **Czyste zamykanie** — brak „zombi” (procesu bez okien); okno konsoli jest jedynym widocznym
+- Zero dodatkowych bibliotek: tylko `ctypes` ze standardowej biblioteki Pythona
 
 ## 📋 Wymagania
-- **OS**: Windows 10/11
-- **Python**: 3.8+
-- **Zależności**: pywin32, numpy
 
-## 🛠 Instalacja
-
-### Opcja 1: Ręczna instalacja
-```bash
-pip install -r requirements.txt
-```
-
-### Opcja 2: Użycie venv (zalecane)
-```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-```
+- **Windows 10/11**
+- **Python 3.8+** (rozwojowo testowane na 3.12) — `pywin32` nie jest potrzebny
 
 ## 🚀 Uruchomienie
 
-### Jako aplikacja (okienkowa)
 ```bash
+# wersja spakowana (zalecana) - dwuklik też działa
+dist\screen_drawer_window.exe
+
+# albo ze źródeł
 python screen_drawer_window.py
 ```
 
-### Jako usługa
+Przy starcie otwiera się okno konsoli z logami i instrukcją (to jedyne widoczne okno).
+
+## 🔨 Budowa .exe
+
 ```bash
-start_service.bat
+pyinstaller --noconfirm --clean screen_drawer_window.spec
+# wynik: dist\screen_drawer_window.exe
 ```
 
-## 🔨 Build .exe
+Po **każdej** zmianie w kodzie trzeba przebudować `.exe` — binarka w `dist/` nie aktualizuje się sama.
 
-### Użycie build_exe.bat:
+## 🧪 Testy
+
 ```bash
-build_exe.bat
+python tests/selftest_multi_monitor.py   # okna per monitor, DPI, geometria, rebuild okien
+python tests/selftest_input_capture.py   # style okien: przechwytywanie włącz/wyłącz
+python tests/selftest_click_blocking.py  # czy klik REALNIE nie przechodzi na pulpit (okno-sonda)
+python tests/selftest_real_drawing.py    # czy rysuje przy PRAWDZIWYM wejściu (CTRL+ALT+LMB)
 ```
 
-Plik `.exe` znajduje się w `dist/ScreenDrawerWindow.exe`
+Wszystkie testy uruchamiają prawdziwe okna i prawdziwe rysowanie GDI; wejście jest syntetyczne,
+więc nie ruszają myszy ani klawiatury użytkownika. Test na `.exe`:
 
-### Ręczny build (pip + pyinstaller):
 ```bash
-pip install pyinstaller
-pyinstaller --onefile screen_drawer_window.py
-# .exe będzie w dist/ScreenDrawerWindow.exe
+python tests/selftest_real_drawing.py dist\screen_drawer_window.exe
 ```
 
-## 📖 Użycie aplikacji
+`tests/probe_click_routing.py` to diagnostyka (pokazuje, że okno z color key przepuszcza kliknięcia
+— to był powód, dla którego sama flaga `WS_EX_TRANSPARENT` nie wystarczała).
 
-1. **Uruchom aplikację** - wyskakuje minimalne, przezroczyste okno sterujące na górze ekranu
-2. **Przytrzymaj CTRL** i kliknij lewym przyciskiem myszy (LMB)
-3. **Rysuj** pociągając kursorem (dopóki trzymasz CTRL) - linie pojawią się natychmiast po ekranie
-4. **Puść CTRL** - wszystkie rysowane linie znikają, canvas jest resetowany
+## 🏗 Jak to działa (skrót)
 
-### Szybkie uruchomienie .exe
-```bash
-dist/ScreenDrawerWindow.exe
-# lub dwukrotny klik w plik .exe
-```
+- Okna overlay: `WS_POPUP | WS_VISIBLE`, ex-style `TOPMOST | TOOLWINDOW | LAYERED | TRANSPARENT | NOACTIVATE`,
+  tło malowane kolorem klucza (`LWA_COLORKEY`) → przezroczyste, widać tylko kreski
+- Rysowanie: bufor offscreen na każdy monitor (`CreateCompatibleDC` + `BitBlt`), przerysowanie po zmianie
+- Wejście: `GetAsyncKeyState` (kombinacja) + `GetCursorPos`, timer ~16 ms
+- Blokada kliknięć: hook `WH_MOUSE_LL` na osobnym wątku z ciasną pętlą komunikatów; stan przycisku
+  czytany z hooka (zjedzone `WM_LBUTTONDOWN` nie trafia do kolejki, więc `GetAsyncKeyState` go nie widzi)
+- Odporność: `WM_CLOSE` kończy aplikację, `WM_DISPLAYCHANGE`/`WM_DPICHANGED` odtwarzają okna,
+  brak okien overlay → aplikacja kończy się sama (koniec „zombi”)
 
-## 🛠️ Tryb Usługi (opcjonalny)
+## ⚠️ Znane ograniczenia
 
-Aplikacja może działać jako usługa Windows dla automatyzacji:
-
-### Instalacja usługi:
-```bash
-install_service.bat
-```
-
-### Uruchomienie/Stopowanie usługi:
-- `start_service.bat` - uruchamia usługę
-- `stop_service.bat` - zatrzymuje usługę
+- Podczas trzymania CTRL+ALT kliknięcia są zablokowane **globalnie** (nie tylko na pulpicie)
+- Zmiana koloru/grubości kreski, zapis rysunku do pliku — jeszcze nie ma
+- Autostart z Windows trzeba dodać samodzielnie (skrót w `shell:startup`)
 
 ## 📁 Pliki projektu
 
 ```
 .screenshootapp/
-├── .gitignore              # Lista pomijanych plików
-├── README.md               # Dokumentacja (ten plik)
-├── requirements.txt        # Zależności Pythona
-├── build_exe.bat          # Skrypt budowania .exe
-├── install_service.bat    # Instalacja usługi Windows
-├── start_service.bat      # Uruchomienie usługi
-├── stop_service.bat       # Zatrzymanie usługi
-├── screen_drawer_window.py # Główny kod aplikacji (okienkowej)
-├── screen_drawer_service.py # Kod usługi (opcjonalny)
-└── tests/
-    └── test_screen_drawer_window.py  # Testy jednostkowe
+├── screen_drawer_window.py     # cały program (jedno źródło)
+├── screen_drawer_window.spec   # definicja builda PyInstaller
+├── build_exe.bat               # pomocniczy skrypt budowania
+├── requirements.txt            # nic nie jest wymagane poza Pythonem
+├── README.md                   # ten plik
+├── tests/                      # testy (patrz wyżej)
+├── dist/screen_drawer_window.exe
+└── _archive/                   # snapshoty wcześniejszych wersji (ZIP z .exe)
 ```
-
-## 🧪 Testy
-
-```bash
-python -m pytest tests/ -v
-```
-
-## ⚠️ Uwagi
-- Aplikacja wymaga uprawnień administratora do rysowania na ekranie
-- Rysowanie pojawia się natychmiast na głównym monitorze
-- Należy uważać - linie mogą być trwałe w zależności od ustawień systemu
 
 ## 📄 Licencja
 

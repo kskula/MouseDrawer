@@ -734,7 +734,14 @@ def main():
     print(BANNER, file=sys.stderr)
     print(f"[INFO] DPI awareness: {aware}", file=sys.stderr)
     if not acquire_single_instance():
-        print("[ERROR] Aplikacja juz dziala (jedna instancja).", file=sys.stderr)
+        # Druga instancja nic nie robi, ale NIE zamykamy okna natychmiast -
+        # inaczej konsola tylko "mignie" i nie wiadomo o co chodzilo.
+        print("", file=sys.stderr)
+        print("[ERROR] Screen Drawer JUZ DZIALA (dozwolona jedna instancja).", file=sys.stderr)
+        print("        Nie uruchamiaj drugi raz - korzystaj z tego, co masz otwarte.", file=sys.stderr)
+        print("        Nie widzisz okna konsoli? Sprawdz pasek zadan.", file=sys.stderr)
+        print("        To okno zamknie sie samo za 8 sekund.", file=sys.stderr)
+        time.sleep(8)
         return 1
     return DrawOverlayWindow().run()
 

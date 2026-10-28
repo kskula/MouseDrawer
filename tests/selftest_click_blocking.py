@@ -162,7 +162,9 @@ def driver(probe_hwnd, center):
 
     def phase(name, hold_ctrl):
         if hold_ctrl:
+            # kombinacja rysowania to CTRL + ALT (samo CTRL nie blokuje)
             user32.keybd_event(VK_CONTROL, 0, 0, None)
+            user32.keybd_event(0x12, 0, 0, None)          # ALT
             time.sleep(0.5)
         target = class_of(user32.WindowFromPoint(wintypes.POINT(*center)))
         count["down"] = count["up"] = 0
@@ -170,6 +172,7 @@ def driver(probe_hwnd, center):
         time.sleep(0.35)
         got = count["down"]
         if hold_ctrl:
+            user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, None)
             user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, None)
             time.sleep(0.45)
         print(f"[CLICK] {name}: cel klikniecia={target!r}  klikniec w sondzie={got}")

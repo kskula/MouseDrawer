@@ -283,7 +283,12 @@ TIMER_MS = 16
 
 
 # ==================== Hook myszy (wlasny watek) ====================
-_hook = {"handle": None, "proc": None, "app": None, "blocked": 0, "ready": False}
+# Bezpiecznik: jesli CTRL "wisi" wcisniety (zaciecie klawisza, remapper klawiszy,
+# zgubiony keyup), a uzytkownik nie klika - zdejmujemy blokade, zeby nie zabic myszy.
+BLOCK_IDLE_TIMEOUT_S = 10.0
+
+_hook = {"handle": None, "proc": None, "app": None, "blocked": 0, "ready": False,
+         "last_button": 0.0}
 
 
 def _mouse_hook_proc(ncode, wparam, lparam):
@@ -299,6 +304,8 @@ def _mouse_hook_proc(ncode, wparam, lparam):
                     app._phys_lmb = True
                 elif wparam == WM_LBUTTONUP:
                     app._phys_lmb = False
+                if wparam in BLOCKED_MOUSE_MESSAGES:
+                    _hook["last_button"] = time.monotonic()
                 if getattr(app, "_capturing", False) and wparam in BLOCKED_MOUSE_MESSAGES:
                     _hook["blocked"] += 1
                     return 1                     # nie przepuszczamy na pulpit
@@ -429,7 +436,17 @@ class DrawOverlayWindow:
 
     # ---------- wejscie (nadpisywalne w testach) ----------
     def _is_ctrl_down(self):
-        return bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        """
+        Klawisz rysowania = CTRL + ALT (nazwa metody zostaje dla zgodnosci z testami,
+        ktore podstawiaja wlasne, skryptowane wejscie).
+
+        Samo CTRL nic nie robi: nie rysuje i nie blokuje klikniec, wiec zwykle
+        Ctrl+klik w innych programach dziala bez zmian. Dopiero CTRL+ALT+LMB rysuje
+        i na czas trzymania kombinacji blokuje klikniecia (pulpit nie reaguje).
+        """
+        ctrl = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+        alt = bool(user32.GetAsyncKeyState(0x12) & 0x8000)      # VK_MENU
+        return ctrl and alt
 
     def _is_lmb_down(self):
         # Podczas blokowania zdarzenia myszy nie trafiaja do kolejki, wiec
@@ -701,10 +718,13 @@ BANNER = """
 =========================================================
   Screen Drawer - rysowanie po ekranie
 ---------------------------------------------------------
-  CTRL + LMB (przytrzymaj oba)  ->  rysujesz
-  pusc CTRL                     ->  rysunek znika
-  ESC                           ->  zamknij aplikacje
+  CTRL + ALT + LMB (przytrzymaj wszystkie)  ->  rysujesz
+  pusc CTRL lub ALT                         ->  rysunek znika
+  ESC                                       ->  zamknij aplikacje
   (zamkniecie tego okna = koniec aplikacji)
+
+  Samo CTRL nic nie robi - normalny Ctrl+klik dziala jak zawsze.
+  Podczas trzymania CTRL+ALT klikniecia nie docieraja na pulpit.
 =========================================================
 """
 

@@ -83,6 +83,7 @@ def main():
         user32.SetCursorPos(*STROKE[0])
         time.sleep(0.3)
         user32.keybd_event(VK_CONTROL, 0, 0, None)          # CTRL w dol
+        user32.keybd_event(0x12, 0, 0, None)                # ALT w dol (kombinacja rysowania)
         time.sleep(0.5)
         user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, None)   # LMB w dol
         time.sleep(0.25)
@@ -92,6 +93,7 @@ def main():
         time.sleep(0.2)
         user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, None)
         time.sleep(0.3)
+        user32.keybd_event(0x12, 0, KEYEVENTF_KEYUP, None)   # ALT w gore
         user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, None)
         time.sleep(0.6)
         user32.SetCursorPos(*saved)
@@ -114,6 +116,13 @@ def main():
         return 0 if ok else 1
     finally:
         log.close()
+        # najpierw nasze wlasne dziecko, potem reszta instancji projektu
+        # (--onefile to proces-rodzic + dziecko, wiec sam terminate nie wystarcza)
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        time.sleep(0.5)
         kill_project_processes()
 
 

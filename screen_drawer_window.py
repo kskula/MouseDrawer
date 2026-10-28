@@ -285,6 +285,12 @@ def enumerate_monitors():
 # Cel: gdy uzytkownik rysuje (CTRL wcisniety) overlay ma ZJADAC klikniecia,
 # zeby pulpit nie zaznaczal ikon i nie robil ramki. Po puszczeniu CTRL wraca
 # tryb klik-through (mozna normalnie klikac w to, co pod spodem).
+#
+# WAZNE (zmierzone): sama flaga WS_EX_TRANSPARENT NIE wystarcza. Overlay jest
+# layered z LWA_COLORKEY, a piksele klucza (przezroczyste tlo) ZAWSZE przepuszczaja
+# klikniecia - WindowFromPoint zwracal okno pod spodem nawet bez tej flagi.
+# Dlatego klikniecia blokuje niskopoziomowy hook myszy (WH_MOUSE_LL), zalozony
+# tylko na czas trzymania CTRL (poza rysowaniem nie dodaje zadnych opoznien).
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 
@@ -294,11 +300,34 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 
+WH_MOUSE_LL = 14
+BLOCKED_MOUSE_MESSAGES = frozenset([
+    0x0201,  # WM_LBUTTONDOWN
+    0x0202,  # WM_LBUTTONUP
+    0x0204,  # WM_RBUTTONDOWN
+    0x0205,  # WM_RBUTTONUP
+    0x0207,  # WM_MBUTTONDOWN
+    0x0208,  # WM_MBUTTONUP
+    0x020A,  # WM_MOUSEWHEEL
+    0x020B,  # WM_XBUTTONDOWN
+    0x020C,  # WM_XBUTTONUP
+    0x020E,  # WM_MOUSEHWHEEL
+])
+
+HOOKPROC = ctypes_mod.WINFUNCTYPE(wintypes.LPARAM, c_int,
+                                 wintypes.WPARAM, wintypes.LPARAM)
+
 user32.SetWindowLongW.argtypes = [wintypes.HWND, c_int, c_long]
 user32.SetWindowLongW.restype = c_long
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, c_int, c_int,
                                 c_int, c_int, wintypes.UINT]
 user32.SetWindowPos.restype = wintypes.BOOL
+user32.SetWindowsHookExW.argtypes = [c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+user32.CallNextHookEx.argtypes = [wintypes.HHOOK, c_int, wintypes.WPARAM, wintypes.LPARAM]
+user32.CallNextHookEx.restype = wintypes.LPARAM
 
 # WS_EX_NOACTIVATE: okno nie kradnie fokusu (aktywne okno uzytkownika zostaje aktywne)
 EX_STYLE_PASSTHROUGH = (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED
@@ -309,9 +338,48 @@ EX_STYLE_CAPTURE = (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED
 # nadpisuje wczesniejsza definicje - okna powstaja w trybie klik-through
 EX_STYLE = EX_STYLE_PASSTHROUGH
 
+_hook = {"handle": None, "proc": None, "app": None, "blocked": 0}
+
+
+def _mouse_hook_proc(ncode, wparam, lparam):
+    """Hook WH_MOUSE_LL: zwraca 1 (zjadam zdarzenie), gdy trwa rysowanie."""
+    try:
+        if ncode >= 0 and wparam in BLOCKED_MOUSE_MESSAGES:
+            app = _hook["app"]
+            if app is not None and getattr(app, "_capturing", False):
+                _hook["blocked"] += 1
+                return 1
+    except Exception:
+        pass
+    return user32.CallNextHookEx(None, ncode, wparam, lparam)
+
+
+def install_mouse_hook(app):
+    """Zaklada hook myszy (raz). Wymaga petli komunikatow w tym watku."""
+    if _hook["handle"]:
+        return True
+    _hook["app"] = app
+    if _hook["proc"] is None:
+        _hook["proc"] = HOOKPROC(_mouse_hook_proc)
+    _hook["handle"] = user32.SetWindowsHookExW(WH_MOUSE_LL, _hook["proc"], None, 0)
+    if _hook["handle"]:
+        print("[LOG] Hook myszy zalozony - klikniecia nie dotra na pulpit", file=sys.stderr)
+        return True
+    print(f"[WARN] Nie udalo sie zalozyc hooka myszy: {kernel32.GetLastError()}",
+          file=sys.stderr)
+    return False
+
+
+def remove_mouse_hook():
+    if _hook["handle"]:
+        user32.UnhookWindowsHookEx(_hook["handle"])
+        _hook["handle"] = None
+        print(f"[LOG] Hook myszy zdjety (zjadl {_hook['blocked']} zdarzen)",
+              file=sys.stderr)
+
 
 def set_input_capture(app, capture):
-    """Wlacza/wylacza przechwytywanie myszy przez okna overlay (idempotentnie)."""
+    """Wlacza/wylacza przechwytywanie myszy (styl okien + hook). Idempotentne."""
     style_want = EX_STYLE_CAPTURE if capture else EX_STYLE_PASSTHROUGH
     changed = False
     for mon in app.monitors:
@@ -327,6 +395,10 @@ def set_input_capture(app, capture):
                                 | SWP_NOACTIVATE | SWP_FRAMECHANGED)
             changed = True
     app._capturing = capture
+    if capture:
+        install_mouse_hook(app)
+    else:
+        remove_mouse_hook()
     if changed:
         print("[LOG] " + ("Przechwytuje mysz (pulpit nie reaguje)"
                           if capture else "Klik-through (pulpit znowu dziala)"),
@@ -623,6 +695,7 @@ class DrawOverlayWindow:
 
     def _cleanup(self):
         try:
+            remove_mouse_hook()
             self._destroy_windows()
         except Exception as e:
             print(f"[WARN] Blad sprzatania: {e}", file=sys.stderr)

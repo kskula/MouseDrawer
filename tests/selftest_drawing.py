@@ -98,7 +98,9 @@ def watchdog():
         m.user32.GetClassNameW(hwnd, buf, 256)
         classes.append((buf.value, bool(visible)))
 
-    ok_windows = len(windows) == 1
+    # od v0.2 jest jedno okno overlay na monitor - nie zakladamy "1"
+    expected = len(getattr(app, "monitors", [])) or 1
+    ok_windows = len(windows) == expected
     ok_draw = app.max_segments >= 2
     ok_reset = len(app.segments) == 0
     ok_paint = app.paint_calls >= 2

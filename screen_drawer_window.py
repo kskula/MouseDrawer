@@ -216,7 +216,7 @@ class DrawOverlayWindow:
         
         # Okno pop-up, transparentne, bez aktywacji (na górze ale nie blokujące)
         self.hwnd = user32.CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
             "ScreenDrawerWindow",
             "",  # Brak tytułu
             WS_POPUP | WS_VISIBLE,

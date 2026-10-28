@@ -8,6 +8,9 @@ Jedynym widocznym oknem jest konsola z logami (jej X zamyka aplikacje).
 
 Rysowanie: przytrzymaj CTRL i LMB -> rysujesz; pusc CTRL -> rysunek znika.
 Zamkniecie: ESC albo X na oknie konsoli.
+
+v0.3: reaguje na WM_DISPLAYCHANGE / WM_DPICHANGED - odpiecie monitora, zmiana
+rozdzielczosci albo skalowania odtwarza okna overlay bez restartu aplikacji.
 """
 
 import ctypes as ctypes_mod
@@ -200,6 +203,8 @@ PS_SOLID = 0
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
 WM_QUIT = 0x0012
+WM_DISPLAYCHANGE = 0x007E
+WM_DPICHANGED = 0x02E0
 WM_TIMER = 0x0113
 PM_REMOVE = 0x0001
 
@@ -282,14 +287,17 @@ class DrawOverlayWindow:
     def __init__(self):
         self.monitors = []
         self.hwnd = None            # hwnd pierwszego monitora
-        self.segments = []          # [(x1, y1, x2, y2)] we wspolrzednych ekranu
+        self.segments = []          # [(x1, y1, x2, y2)] we wspolrzednach ekranu
         self.drawing = False
         self._last_pt = None
         self._ctrl_prev = False
         self._lmb_prev = False
         self._quit = False
+        self._class_registered = False
+        self._rebuild_request = None
         self.paint_calls = 0
         self.paint_counts = []
+        self.rebuild_count = 0
         # WAZNE: referencja do callbacku musi zyc, inaczej GC go zbierze i proces padnie
         self._wndproc = WNDPROC(self._on_message)
 
@@ -311,32 +319,36 @@ class DrawOverlayWindow:
 
     # ---------- procedura okna ----------
     def _on_message(self, hwnd, message, wparam, lparam):
-        """WM_CLOSE/WM_DESTROY koncza aplikacje czysto - bez zombiaka bez okien."""
+        """WM_CLOSE/WM_DESTROY koncza aplikacje; zmiana ekranow zleca odtworzenie okien."""
         if message == WM_CLOSE:
             print("[INFO] Zamkniecie okna -> koncze", file=sys.stderr)
             self._quit = True
             return 0
         if message == WM_DESTROY:
-            self._quit = True
-            user32.PostQuitMessage(0)
+            # NIE konczymy tu aplikacji: wlasne odtwarzanie okien (WM_DISPLAYCHANGE)
+            # tez wysyla WM_DESTROY do starych okien. Gdyby okna zniknely z innego
+            # powodu, siatka bezpieczenstwa w run() i tak zakonczy aplikacje.
+            return 0
+        if message == WM_DISPLAYCHANGE:
+            self._rebuild_request = "WM_DISPLAYCHANGE"
+            return 0
+        if message == WM_DPICHANGED:
+            self._rebuild_request = "WM_DPICHANGED"
             return 0
         return user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
     # ---------- okna ----------
-    def create(self):
-        self.monitors = enumerate_monitors()
-        if not self.monitors:
-            print("[ERROR] Nie znaleziono zadnego monitora", file=sys.stderr)
-            return False
-
+    def _log_monitors(self):
         for m in self.monitors:
             left, top, right, bottom = m["rect"]
             print(f"[INFO] Monitor {m['device']} rect=({left},{top},{right},{bottom}) "
                   f"rozmiar={right-left}x{bottom-top} primary={m['primary']} dpi={m['dpi']}",
                   file=sys.stderr)
 
+    def _register_class(self):
+        if self._class_registered:
+            return True
         hinst = kernel32.GetModuleHandleW(None)
-
         wc = WNDCLASSW()
         wc.style = 0
         wc.lpfnWndProc = ctypes_mod.cast(self._wndproc, ctypes_mod.c_void_p)
@@ -348,11 +360,15 @@ class DrawOverlayWindow:
         wc.hbrBackground = None
         wc.lpszMenuName = None
         wc.lpszClassName = CLASS_NAME
-
         if not user32.RegisterClassW(byref(wc)):
             print(f"[ERROR] RegisterClassW: {kernel32.GetLastError()}", file=sys.stderr)
             return False
+        self._class_registered = True
+        return True
 
+    def _create_windows(self):
+        """Tworzy okna overlay + bufory dla biezacej listy self.monitors."""
+        hinst = kernel32.GetModuleHandleW(None)
         for m in self.monitors:
             left, top, right, bottom = m["rect"]
             w, h = right - left, bottom - top
@@ -375,14 +391,54 @@ class DrawOverlayWindow:
 
         self.hwnd = self.monitors[0]["hwnd"]
         self.paint_counts = [0] * len(self.monitors)
-
         # jeden timer (na pierwszym oknie) napedza wszystkie
         user32.SetTimer(self.hwnd, TIMER_ID, TIMER_MS, None)
-
         print(f"[OK] Okna overlay: {len(self.monitors)} (po jednym na monitor, "
               f"ukryte z paska zadan)", file=sys.stderr)
         self._paint()
         return True
+
+    def _destroy_windows(self):
+        for mon in self.monitors:
+            try:
+                if mon.get("hwnd"):
+                    user32.KillTimer(mon["hwnd"], TIMER_ID)
+                    user32.DestroyWindow(mon["hwnd"])
+                    mon["hwnd"] = None
+                if mon.get("mem_dc"):
+                    gdi32.DeleteDC(mon["mem_dc"])
+                    mon["mem_dc"] = None
+                if mon.get("mem_bmp"):
+                    gdi32.DeleteObject(mon["mem_bmp"])
+                    mon["mem_bmp"] = None
+            except Exception as e:
+                print(f"[WARN] Blad niszczenia okna: {e}", file=sys.stderr)
+
+    def _rebuild(self, reason):
+        """Odtworzenie okien po zmianie konfiguracji ekranow / skalowania."""
+        print(f"[INFO] {reason} -> odtwarzam okna overlay", file=sys.stderr)
+        self._destroy_windows()
+        self.monitors = enumerate_monitors()
+        if not self.monitors:
+            print("[ERROR] Po zmianie ekranow brak monitorow -> koncze", file=sys.stderr)
+            self._quit = True
+            return False
+        self._log_monitors()
+        if not self._register_class() or not self._create_windows():
+            self._quit = True
+            return False
+        self.rebuild_count += 1
+        return True
+
+    def create(self):
+        self.monitors = enumerate_monitors()
+        if not self.monitors:
+            print("[ERROR] Nie znaleziono zadnego monitora", file=sys.stderr)
+            return False
+        self._log_monitors()
+        if not self._register_class():
+            return False
+        return self._create_windows()
 
     # ---------- rysowanie ----------
     def _monitor_client_segments(self, mon):
@@ -492,6 +548,12 @@ class DrawOverlayWindow:
                 user32.DispatchMessageW(byref(msg))
                 if self._quit:
                     break
+                if self._rebuild_request:
+                    reason = self._rebuild_request
+                    self._rebuild_request = None
+                    if not self._rebuild(reason):
+                        break
+                    continue
                 if msg.message == WM_TIMER and msg.hwnd == self.hwnd:
                     if self._on_timer():
                         self._paint()
@@ -504,17 +566,7 @@ class DrawOverlayWindow:
 
     def _cleanup(self):
         try:
-            for mon in self.monitors:
-                if mon.get("hwnd"):
-                    user32.KillTimer(mon["hwnd"], TIMER_ID)
-                    user32.DestroyWindow(mon["hwnd"])
-                    mon["hwnd"] = None
-                if mon.get("mem_dc"):
-                    gdi32.DeleteDC(mon["mem_dc"])
-                    mon["mem_dc"] = None
-                if mon.get("mem_bmp"):
-                    gdi32.DeleteObject(mon["mem_bmp"])
-                    mon["mem_bmp"] = None
+            self._destroy_windows()
         except Exception as e:
             print(f"[WARN] Blad sprzatania: {e}", file=sys.stderr)
 

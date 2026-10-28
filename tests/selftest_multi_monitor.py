@@ -85,7 +85,17 @@ app = ScriptedWindow()
 
 
 def watchdog():
-    time.sleep(2.0)
+    time.sleep(1.2)
+
+    # --- faza 2: symulacja zmiany konfiguracji ekranow (odpiecie / zmiana DPI / rozdzielczosci) ---
+    hwnd_before = [mon["hwnd"] for mon in app.monitors]
+    m.user32.PostMessageW(app.hwnd, m.WM_DISPLAYCHANGE, 0, 0)
+    time.sleep(1.3)
+
+    hwnd_after = [mon["hwnd"] for mon in app.monitors]
+    ok_rebuild = (len(hwnd_after) == len(hwnd_before)
+                  and hwnd_before != hwnd_after
+                  and all(m.user32.IsWindow(h) for h in hwnd_after))
 
     n_mon = len(app.monitors)
     visible = count_visible_own_windows(os.getpid())
@@ -127,14 +137,16 @@ def watchdog():
               f"segmentow_w_ukladzie_monitora={len(per_mon[i])} w_buforze={inside[i]}")
     print(f"[SELFTEST] ticks={app.t} max_segments={app.max_segments} "
           f"final_segments={len(app.segments)} paint_total={app.paint_calls} "
-          f"dpi_awareness={aw_val}")
+          f"dpi_awareness={aw_val} rebuild_count={getattr(app, 'rebuild_count', -1)}")
+    print(f"[SELFTEST] hwnd przed={hwnd_before} po={hwnd_after}")
     print(f"[SELFTEST] windows={'PASS' if ok_windows else 'FAIL'} "
           f"drawing={'PASS' if ok_draw else 'FAIL'} "
           f"geometry={'PASS' if ok_geom else 'FAIL'} "
           f"per_monitor_paint={'PASS' if ok_painted else 'FAIL'} "
           f"reset={'PASS' if ok_reset else 'FAIL'} "
-          f"dpi_aware={'PASS' if ok_dpi else 'FAIL'}")
-    result = all([ok_windows, ok_draw, ok_geom, ok_painted, ok_reset, ok_dpi])
+          f"dpi_aware={'PASS' if ok_dpi else 'FAIL'} "
+          f"rebuild={'PASS' if ok_rebuild else 'FAIL'}")
+    result = all([ok_windows, ok_draw, ok_geom, ok_painted, ok_reset, ok_dpi, ok_rebuild])
     print("[SELFTEST] RESULT=" + ("PASS" if result else "FAIL"))
     sys.stdout.flush()
     os._exit(0 if result else 1)

@@ -281,6 +281,58 @@ def enumerate_monitors():
     return mons
 
 
+# ==================== Przechwytywanie myszy ====================
+# Cel: gdy uzytkownik rysuje (CTRL wcisniety) overlay ma ZJADAC klikniecia,
+# zeby pulpit nie zaznaczal ikon i nie robil ramki. Po puszczeniu CTRL wraca
+# tryb klik-through (mozna normalnie klikac w to, co pod spodem).
+GWL_EXSTYLE = -20
+WS_EX_NOACTIVATE = 0x08000000
+
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+
+user32.SetWindowLongW.argtypes = [wintypes.HWND, c_int, c_long]
+user32.SetWindowLongW.restype = c_long
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, c_int, c_int,
+                                c_int, c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
+
+# WS_EX_NOACTIVATE: okno nie kradnie fokusu (aktywne okno uzytkownika zostaje aktywne)
+EX_STYLE_PASSTHROUGH = (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED
+                        | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE)
+EX_STYLE_CAPTURE = (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED
+                    | WS_EX_NOACTIVATE)
+
+# nadpisuje wczesniejsza definicje - okna powstaja w trybie klik-through
+EX_STYLE = EX_STYLE_PASSTHROUGH
+
+
+def set_input_capture(app, capture):
+    """Wlacza/wylacza przechwytywanie myszy przez okna overlay (idempotentnie)."""
+    style_want = EX_STYLE_CAPTURE if capture else EX_STYLE_PASSTHROUGH
+    changed = False
+    for mon in app.monitors:
+        hwnd = mon.get("hwnd")
+        if not hwnd:
+            continue
+        cur = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        is_passthrough = bool(cur & WS_EX_TRANSPARENT)
+        if is_passthrough == capture:          # juz w zlym trybie
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style_want)
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+                                | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+            changed = True
+    app._capturing = capture
+    if changed:
+        print("[LOG] " + ("Przechwytuje mysz (pulpit nie reaguje)"
+                          if capture else "Klik-through (pulpit znowu dziala)"),
+              file=sys.stderr)
+
+
 class DrawOverlayWindow:
     """Overlay: jedno okno na monitor, wspolna lista kresek w ukladzie ekranu."""
 
@@ -396,6 +448,8 @@ class DrawOverlayWindow:
         print(f"[OK] Okna overlay: {len(self.monitors)} (po jednym na monitor, "
               f"ukryte z paska zadan)", file=sys.stderr)
         self._paint()
+        # od razu wlasciwy tryb myszy - bez czekania na pierwszy tick timera (do 16 ms)
+        set_input_capture(self, self._is_ctrl_down())
         return True
 
     def _destroy_windows(self):
@@ -498,6 +552,9 @@ class DrawOverlayWindow:
         ctrl = self._is_ctrl_down()
         lmb = self._is_lmb_down()
         changed = False
+
+        # CTRL wcisniety -> overlay przechwytuje mysz, pulpit nie zaznacza ikon
+        set_input_capture(self, ctrl)
 
         # RESET: puszczono CTRL -> czyscimy rysunek
         if self._ctrl_prev and not ctrl:

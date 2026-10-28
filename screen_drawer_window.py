@@ -226,6 +226,9 @@ shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes_mod.POINTER(NOTIFYI
 shell32.Shell_NotifyIconW.restype = wintypes.BOOL
 user32.LoadIconW.argtypes = [wintypes.HINSTANCE, ctypes_mod.c_void_p]
 user32.LoadIconW.restype = wintypes.HICON
+user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                              c_int, c_int, wintypes.UINT]
+user32.LoadImageW.restype = wintypes.HANDLE
 user32.CreatePopupMenu.argtypes = []
 user32.CreatePopupMenu.restype = wintypes.HMENU
 user32.AppendMenuW.argtypes = [wintypes.HMENU, wintypes.UINT, ctypes_mod.c_void_p, wintypes.LPCWSTR]
@@ -337,6 +340,9 @@ NIF_MESSAGE = 0x00000001
 NIF_ICON = 0x00000002
 NIF_TIP = 0x00000004
 IDI_APPLICATION = 32512
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x00000010
+LR_DEFAULTSIZE = 0x00000040
 MB_OK = 0x00000000
 MB_ICONINFORMATION = 0x00000040
 MB_SETFOREGROUND = 0x00010000
@@ -468,6 +474,49 @@ def tray_create_window(app):
     return hwnd
 
 
+def _icon_path():
+    """
+    Sciezka do icon.ico. Szukamy obok .exe, obok skryptu, potem w _MEIPASS
+    (PyInstaller onefile). Brak pliku -> None (uzyjemy ikony systemowej).
+    Dodatkowo sprawdzamy podaną ikonę generowaną przez Gemini.
+    """
+    # 1. Sprawdź ikonę wygenerowaną przez Gemini
+    gemini_icon = r"C:\\Users\\adamg\\AppData\\Roaming\\Hermes\\composer-images\\Gemini_Generated_Image_gdlmb4gdlmb4gdlm_bb2e60.ico"
+    if os.path.isfile(gemini_icon):
+        return gemini_icon
+    # 2. Reszta logiczna (icon.ico)
+    candidates = []
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(
+            os.path.dirname(os.path.abspath(sys.executable)), "icon.ico"))
+    candidates.append(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "icon.ico"))
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "icon.ico"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _load_tray_icon():
+    """Ikona z pliku icon.ico; gdy brak lub blad - standardowa ikona systemowa."""
+    path = _icon_path()
+    if path:
+        hicon = user32.LoadImageW(None, path, IMAGE_ICON, 0, 0,
+                                  LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        if hicon:
+            print(f"[OK] Ikona tray z pliku: {path}", file=sys.stderr)
+            return hicon
+        print(f"[WARN] LoadImageW nie wczytal {path} "
+              f"(err={kernel32.GetLastError()}) - uzywam ikony systemowej",
+              file=sys.stderr)
+    else:
+        print("[WARN] Brak pliku icon.ico - uzywam ikony systemowej", file=sys.stderr)
+    return user32.LoadIconW(None, ctypes_mod.c_void_p(IDI_APPLICATION))
+
+
 def tray_add(app):
     """Dodaje ikone aplikacji do zasobnika (kolo zegara)."""
     if _tray["added"]:
@@ -475,7 +524,7 @@ def tray_add(app):
     hwnd = tray_create_window(app)
     if not hwnd:
         return False
-    _tray["icon"] = user32.LoadIconW(None, ctypes_mod.c_void_p(IDI_APPLICATION))
+    _tray["icon"] = _load_tray_icon()
 
     nid = NOTIFYICONDATAW()
     nid.cbSize = ctypes_mod.sizeof(NOTIFYICONDATAW)
@@ -484,7 +533,7 @@ def tray_add(app):
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
     nid.uCallbackMessage = TRAY_CALLBACK_MSG
     nid.hIcon = _tray["icon"]
-    nid.szTip = "Screen Drawer - rysuj: CTRL+ALT+LMB | pusc CTRL/ALT = wyczysc | prawy klik = menu"
+    nid.szTip = "Draw: CTRL+ALT+LMB | Clear: Release CTRL/ALT | Close: Right-Click"
 
     ok = bool(shell32.Shell_NotifyIconW(NIM_ADD, byref(nid)))
     _tray["added"] = ok
@@ -520,7 +569,7 @@ def tray_show_menu(app):
     pt = POINT()
     user32.GetCursorPos(byref(pt))
     menu = user32.CreatePopupMenu()
-    user32.AppendMenuW(menu, MF_STRING, ctypes_mod.c_void_p(ID_MENU_CLOSE), "Zamknij")
+    user32.AppendMenuW(menu, MF_STRING, ctypes_mod.c_void_p(ID_MENU_CLOSE), "Close")
     # sztuczka Microsoftu: bez SetForegroundWindow menu nie zamyka sie po kliknieciu obok
     user32.SetForegroundWindow(hwnd)
     user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,

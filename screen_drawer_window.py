@@ -855,10 +855,7 @@ class DrawOverlayWindow:
 
     # ---------- logika ----------
     def _on_timer(self):
-        if self._is_esc_down():
-            print("[INFO] ESC -> koncze", file=sys.stderr)
-            self._quit = True
-            return False
+        # ESC key is ignored – close only via tray menu
 
         ctrl = self._is_ctrl_down()
         lmb = self._is_lmb_down()

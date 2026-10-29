@@ -8,7 +8,7 @@ Drawing directly on the desktop with a transparent overlay (one window per monit
 |--------|--------|
 | **CTRL + ALT + LMB** (hold all three) | Draw a red line under the cursor |
 | Release **CTRL** or **ALT** | All drawings disappear |
-| **ESC** | Exit the application |
+| **ESC** | Close via tray menu (no direct exit) |
 | X on console window | Exit the application |
 
 *Holding just CTRL does nothing – it doesn’t block clicks, so normal Ctrl‑clicks (e.g. multi‑selecting files) still work.*

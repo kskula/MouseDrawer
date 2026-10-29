@@ -10,7 +10,7 @@ BEZ OKNA KONSOLI: jedynym widocznym znakiem aplikacji jest IKONA W ZASOBNIKU
 Logi leca do pliku %TEMP%\\screen_drawer.log (albo pod SCREEN_DRAWER_LOG).
 
 Rysowanie: przytrzymaj CTRL + ALT + LMB -> rysujesz; pusc CTRL lub ALT -> rysunek znika.
-Zamkniecie: menu ikony -> "Zamknij" (albo ESC).
+Zamkniecie: menu ikony -> "Zamknij".
 """
 
 import ctypes as ctypes_mod
@@ -855,7 +855,7 @@ class DrawOverlayWindow:
 
     # ---------- logika ----------
     def _on_timer(self):
-        # ESC key is ignored – close only via tray menu
+        # Closing handled via tray menu only (ESC no longer used)
 
         ctrl = self._is_ctrl_down()
         lmb = self._is_lmb_down()
